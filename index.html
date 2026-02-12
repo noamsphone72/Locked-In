@@ -1,0 +1,360 @@
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js";
+import { PointerLockControls } from "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/controls/PointerLockControls.js";
+
+let gameState="menu";
+let totalKeys=3;
+let keysCollected=0;
+let keyObjects=[];
+let colliders=[];
+let chasing=false;
+let monsterSpeed=0.05;
+let playerRadius=0.8;
+let monsterRadius=1;
+let wanderDirection=new THREE.Vector3(1,0,0);
+let wanderTimer=0;
+
+let flash=document.getElementById("flash");
+
+let scene=new THREE.Scene();
+scene.fog=new THREE.Fog(0x000000,10,60);
+
+let camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,1000);
+let renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+document.body.appendChild(renderer.domElement);
+
+let controls=new PointerLockControls(camera,document.body);
+scene.add(controls.getObject());
+
+/* LIGHTING */
+scene.add(new THREE.AmbientLight(0x222222,0.3));
+
+let flashlight=new THREE.SpotLight(0xffffff,3,40,Math.PI/8,0.5);
+flashlight.castShadow=true;
+camera.add(flashlight);
+camera.add(flashlight.target);
+flashlight.position.set(0,0,0);
+flashlight.target.position.set(0,0,-1);
+
+/* AUDIO SYSTEM */
+let listener = new THREE.AudioListener();
+camera.add(listener);
+let audioLoader = new THREE.AudioLoader();
+
+let chaseSound = new THREE.Audio(listener);
+audioLoader.load('chase.mp3', buffer=>{
+    chaseSound.setBuffer(buffer);
+    chaseSound.setLoop(true);
+    chaseSound.setVolume(0.5);
+});
+
+let footstepSound = new THREE.Audio(listener);
+audioLoader.load('footstep.mp3', buffer=>{
+    footstepSound.setBuffer(buffer);
+    footstepSound.setLoop(true);
+    footstepSound.setVolume(0.4);
+});
+
+/* FLOOR */
+let floor=new THREE.Mesh(
+    new THREE.PlaneGeometry(60,60),
+    new THREE.MeshPhongMaterial({color:0x111111})
+);
+floor.rotation.x=-Math.PI/2;
+floor.receiveShadow=true;
+scene.add(floor);
+
+/* COLLISION HELPERS */
+function addCollider(mesh){
+    mesh.castShadow=true;
+    mesh.receiveShadow=true;
+    scene.add(mesh);
+    colliders.push(mesh);
+}
+
+function wall(x,z,w,h,d){
+    let m=new THREE.Mesh(
+        new THREE.BoxGeometry(w,h,d),
+        new THREE.MeshPhongMaterial({color:0x333333})
+    );
+    m.position.set(x,h/2,z);
+    addCollider(m);
+}
+
+function furniture(x,z,w,h,d,color=0x555555){
+    let f=new THREE.Mesh(
+        new THREE.BoxGeometry(w,h,d),
+        new THREE.MeshPhongMaterial({color})
+    );
+    f.position.set(x,h/2,z);
+    addCollider(f);
+}
+
+/* HOUSE */
+wall(0,-30,60,6,1);
+wall(0,30,60,6,1);
+wall(-30,0,1,6,60);
+wall(30,0,1,6,60);
+wall(0,0,1,6,40);
+wall(-15,10,30,6,1);
+wall(15,-10,30,6,1);
+
+furniture(-20,-10,6,2,3);
+furniture(18,-12,5,3,2);
+furniture(18,15,6,2,4);
+furniture(-18,18,4,3,3);
+furniture(5,5,3,2,3);
+
+/* DOOR */
+let door=new THREE.Mesh(
+    new THREE.BoxGeometry(4,6,1),
+    new THREE.MeshPhongMaterial({color:0xff0000})
+);
+door.position.set(0,3,-29);
+scene.add(door);
+let doorUnlocked=false;
+
+/* KEY SPAWN */
+function validSpawn(pos){
+    for(let obj of colliders){
+        let box=new THREE.Box3().setFromObject(obj);
+        let point=new THREE.Vector3(pos.x,1,pos.z);
+        if(box.containsPoint(point)) return false;
+    }
+    return true;
+}
+
+function spawnKeys(){
+    keyObjects.forEach(k=>scene.remove(k));
+    keyObjects=[];
+    keysCollected=0;
+
+    for(let i=0;i<totalKeys;i++){
+        let key=new THREE.Mesh(
+            new THREE.BoxGeometry(1,1,1),
+            new THREE.MeshPhongMaterial({color:0xffff00,emissive:0xffff00})
+        );
+
+        let pos;
+        do{
+            pos=new THREE.Vector3(
+                (Math.random()*40)-20,
+                1,
+                (Math.random()*40)-20
+            );
+        }while(!validSpawn(pos));
+
+        key.position.copy(pos);
+        scene.add(key);
+        keyObjects.push(key);
+    }
+}
+spawnKeys();
+
+/* MONSTER */
+let monster=new THREE.Mesh(
+    new THREE.BoxGeometry(1.5,6,1.5),
+    new THREE.MeshPhongMaterial({color:0x111111})
+);
+monster.position.set(0,3,-15);
+monster.castShadow=true;
+scene.add(monster);
+
+/* PLAYER HITBOX */
+let playerHitbox=new THREE.Mesh(
+    new THREE.CylinderGeometry(0.8,0.8,4,8),
+    new THREE.MeshBasicMaterial({visible:false})
+);
+scene.add(playerHitbox);
+
+let raycaster=new THREE.Raycaster();
+
+/* SPRINT SYSTEM */
+let isSprinting=false;
+document.addEventListener("keydown",e=>{
+    if(e.code==="ShiftLeft") isSprinting=true;
+});
+document.addEventListener("keyup",e=>{
+    if(e.code==="ShiftLeft") isSprinting=false;
+});
+
+let keysPressed={};
+document.addEventListener("keydown",e=>keysPressed[e.code]=true);
+document.addEventListener("keyup",e=>keysPressed[e.code]=false);
+
+/* COLLISION CHECK */
+function canMove(newPos,radius){
+    for(let obj of colliders){
+        let box=new THREE.Box3().setFromObject(obj);
+        let entityBox=new THREE.Box3(
+            new THREE.Vector3(newPos.x-radius,0,newPos.z-radius),
+            new THREE.Vector3(newPos.x+radius,6,newPos.z+radius)
+        );
+        if(box.intersectsBox(entityBox)) return false;
+    }
+    return true;
+}
+
+function monsterCanSeePlayer(){
+    let dir=new THREE.Vector3()
+        .subVectors(playerHitbox.position,monster.position)
+        .normalize();
+
+    raycaster.set(monster.position,dir);
+    raycaster.far=monster.position.distanceTo(playerHitbox.position);
+
+    let intersects=raycaster.intersectObjects(colliders,true);
+    return intersects.length===0;
+}
+
+function monsterInFlashlight(){
+    let dir=new THREE.Vector3();
+    camera.getWorldDirection(dir);
+
+    let toMonster=new THREE.Vector3()
+        .subVectors(monster.position,camera.position)
+        .normalize();
+
+    return dir.dot(toMonster)>0.92;
+}
+
+function triggerDeath(){
+    gameState="dead";
+    flash.style.opacity=1;
+    controls.unlock();
+    setTimeout(()=>{
+        flash.style.opacity=0;
+        document.getElementById("deathScreen").style.display="flex";
+    },300);
+}
+
+/* GAME LOOP */
+function animate(){
+requestAnimationFrame(animate);
+if(gameState!=="playing"){renderer.render(scene,camera);return;}
+
+let player=controls.getObject();
+playerHitbox.position.copy(player.position);
+
+let oldPos=player.position.clone();
+
+/* MOVEMENT */
+let speed=isSprinting?0.2:0.1;
+
+if(keysPressed["KeyW"])controls.moveForward(speed);
+if(keysPressed["KeyS"])controls.moveForward(-speed);
+if(keysPressed["KeyA"])controls.moveRight(-speed);
+if(keysPressed["KeyD"])controls.moveRight(speed);
+
+/* FOOTSTEP AUDIO */
+let moving=keysPressed["KeyW"]||keysPressed["KeyS"]||
+           keysPressed["KeyA"]||keysPressed["KeyD"];
+
+if(moving && !footstepSound.isPlaying) footstepSound.play();
+if(!moving && footstepSound.isPlaying) footstepSound.stop();
+
+let newPos=player.position.clone();
+
+let testX=oldPos.clone(); testX.x=newPos.x;
+if(canMove(testX,playerRadius))player.position.x=testX.x;
+else player.position.x=oldPos.x;
+
+let testZ=oldPos.clone(); testZ.z=newPos.z;
+if(canMove(testZ,playerRadius))player.position.z=testZ.z;
+else player.position.z=oldPos.z;
+
+/* KEY PICKUP */
+for(let i=keyObjects.length-1;i>=0;i--){
+    let key=keyObjects[i];
+    if(player.position.distanceTo(key.position)<2){
+        scene.remove(key);
+        keyObjects.splice(i,1);
+        keysCollected++;
+        monsterSpeed+=0.01;
+
+        if(keysCollected===totalKeys){
+            doorUnlocked=true;
+            door.material.color.set(0x00ff00);
+        }
+    }
+}
+
+/* WIN */
+if(doorUnlocked && player.position.distanceTo(door.position)<3){
+    gameState="win";
+    document.getElementById("winScreen").style.display="flex";
+    controls.unlock();
+}
+
+/* MONSTER AI */
+let dist=monster.position.distanceTo(player.position);
+
+if(dist<25 && monsterCanSeePlayer()){
+    chasing=true;
+}
+
+if(chasing){
+    if(!chaseSound.isPlaying) chaseSound.play();
+
+    let dir=new THREE.Vector3()
+        .subVectors(player.position,monster.position)
+        .normalize();
+
+    monster.position.add(dir.multiplyScalar(monsterSpeed));
+    monster.lookAt(player.position);
+
+    if(dist>30 && !monsterCanSeePlayer()){
+        chasing=false;
+    }
+}else{
+    if(chaseSound.isPlaying) chaseSound.stop();
+
+    wanderTimer--;
+    if(wanderTimer<=0){
+        wanderDirection.set(Math.random()-0.5,0,Math.random()-0.5).normalize();
+        wanderTimer=200;
+    }
+
+    let move=wanderDirection.clone().multiplyScalar(0.02);
+    let testPos=monster.position.clone().add(move);
+    if(canMove(testPos,monsterRadius)){
+        monster.position.add(move);
+    }
+}
+
+/* FLASHLIGHT EFFECT */
+if(monsterInFlashlight()){
+    monster.material.color.set(0x444444);
+    chasing=false;
+}else{
+    monster.material.color.set(0x111111);
+}
+
+/* ATTACK */
+if(dist<2){
+    triggerDeath();
+}
+
+renderer.render(scene,camera);
+}
+animate();
+
+/* START / RESTART */
+window.startGame=function(){
+document.getElementById("menu").style.display="none";
+spawnKeys();
+doorUnlocked=false;
+door.material.color.set(0xff0000);
+monsterSpeed=0.05;
+chasing=false;
+controls.getObject().position.set(0,2,20);
+controls.lock();
+gameState="playing";
+}
+
+window.restartGame=function(){
+location.reload();
+}
+</script>
