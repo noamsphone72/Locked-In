@@ -2,62 +2,79 @@
 import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js";
 import { PointerLockControls } from "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/controls/PointerLockControls.js";
 
-let gameState="menu";
-let totalKeys=3;
-let keysCollected=0;
-let keyObjects=[];
-let colliders=[];
-let chasing=false;
-let monsterSpeed=0.05;
-let playerRadius=0.8;
-let monsterRadius=1;
-let wanderDirection=new THREE.Vector3(1,0,0);
-let wanderTimer=0;
+/* ---------------- SETUP ---------------- */
 
-let flash=document.getElementById("flash");
+let scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x000000,10,60);
 
-let scene=new THREE.Scene();
-scene.fog=new THREE.Fog(0x000000,10,60);
-
-let camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,1000);
-let renderer=new THREE.WebGLRenderer({antialias:true});
+let camera = new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.2,1000);
+let renderer = new THREE.WebGLRenderer({antialias:true});
 renderer.setSize(innerWidth,innerHeight);
-renderer.shadowMap.enabled=true;
+renderer.shadowMap.enabled = true;
 document.body.appendChild(renderer.domElement);
 
-let controls=new PointerLockControls(camera,document.body);
-scene.add(controls.getObject());
+window.addEventListener("resize",()=>{
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+});
 
-/* LIGHTING */
+let controls = new PointerLockControls(camera,document.body);
+scene.add(controls.getObject());
+document.body.addEventListener("click",()=>controls.lock());
+
+let clock = new THREE.Clock();
+
+/* ---------------- HUD ---------------- */
+
+let hud = document.createElement("div");
+hud.style.position="absolute";
+hud.style.top="10px";
+hud.style.left="10px";
+hud.style.color="white";
+hud.style.fontFamily="monospace";
+hud.style.fontSize="18px";
+hud.innerHTML="Keys: 0 / 3";
+document.body.appendChild(hud);
+
+/* ---------------- GAME STATE ---------------- */
+
+let gameState="playing";
+let totalKeys=3;
+let keysCollected=0;
+let doorUnlocked=false;
+
+/* ---------------- PLAYER ---------------- */
+
+let moveForward=false,moveBackward=false,moveLeft=false,moveRight=false;
+let playerSpeed=6;
+let playerRadius=0.8;
+
+document.addEventListener("keydown",(e)=>{
+    if(e.code==="KeyW") moveForward=true;
+    if(e.code==="KeyS") moveBackward=true;
+    if(e.code==="KeyA") moveLeft=true;
+    if(e.code==="KeyD") moveRight=true;
+});
+document.addEventListener("keyup",(e)=>{
+    if(e.code==="KeyW") moveForward=false;
+    if(e.code==="KeyS") moveBackward=false;
+    if(e.code==="KeyA") moveLeft=false;
+    if(e.code==="KeyD") moveRight=false;
+});
+
+/* ---------------- LIGHT ---------------- */
+
 scene.add(new THREE.AmbientLight(0x222222,0.3));
 
 let flashlight=new THREE.SpotLight(0xffffff,3,40,Math.PI/8,0.5);
 flashlight.castShadow=true;
 camera.add(flashlight);
 camera.add(flashlight.target);
-flashlight.position.set(0,0,0);
 flashlight.target.position.set(0,0,-1);
 
-/* AUDIO SYSTEM */
-let listener = new THREE.AudioListener();
-camera.add(listener);
-let audioLoader = new THREE.AudioLoader();
+/* ---------------- FLOOR ---------------- */
 
-let chaseSound = new THREE.Audio(listener);
-audioLoader.load('chase.mp3', buffer=>{
-    chaseSound.setBuffer(buffer);
-    chaseSound.setLoop(true);
-    chaseSound.setVolume(0.5);
-});
-
-let footstepSound = new THREE.Audio(listener);
-audioLoader.load('footstep.mp3', buffer=>{
-    footstepSound.setBuffer(buffer);
-    footstepSound.setLoop(true);
-    footstepSound.setVolume(0.4);
-});
-
-/* FLOOR */
 let floor=new THREE.Mesh(
     new THREE.PlaneGeometry(60,60),
     new THREE.MeshPhongMaterial({color:0x111111})
@@ -66,13 +83,33 @@ floor.rotation.x=-Math.PI/2;
 floor.receiveShadow=true;
 scene.add(floor);
 
-/* COLLISION HELPERS */
+/* ---------------- COLLISION ---------------- */
+
+let colliders=[];
+
 function addCollider(mesh){
-    mesh.castShadow=true;
-    mesh.receiveShadow=true;
     scene.add(mesh);
     colliders.push(mesh);
 }
+
+function updateBoxes(){
+    for(let obj of colliders){
+        obj.userData.box=new THREE.Box3().setFromObject(obj);
+    }
+}
+
+function canMove(newPos,radius){
+    let box=new THREE.Box3(
+        new THREE.Vector3(newPos.x-radius,0,newPos.z-radius),
+        new THREE.Vector3(newPos.x+radius,6,newPos.z+radius)
+    );
+    for(let obj of colliders){
+        if(obj.userData.box && obj.userData.box.intersectsBox(box)) return false;
+    }
+    return true;
+}
+
+/* ---------------- WALLS ---------------- */
 
 function wall(x,z,w,h,d){
     let m=new THREE.Mesh(
@@ -83,278 +120,227 @@ function wall(x,z,w,h,d){
     addCollider(m);
 }
 
-function furniture(x,z,w,h,d,color=0x555555){
-    let f=new THREE.Mesh(
-        new THREE.BoxGeometry(w,h,d),
-        new THREE.MeshPhongMaterial({color})
-    );
-    f.position.set(x,h/2,z);
-    addCollider(f);
-}
-
-/* HOUSE */
 wall(0,-30,60,6,1);
 wall(0,30,60,6,1);
 wall(-30,0,1,6,60);
 wall(30,0,1,6,60);
-wall(0,0,1,6,40);
-wall(-15,10,30,6,1);
-wall(15,-10,30,6,1);
 
-furniture(-20,-10,6,2,3);
-furniture(18,-12,5,3,2);
-furniture(18,15,6,2,4);
-furniture(-18,18,4,3,3);
-furniture(5,5,3,2,3);
+/* ---------------- DOOR ---------------- */
 
-/* DOOR */
 let door=new THREE.Mesh(
     new THREE.BoxGeometry(4,6,1),
     new THREE.MeshPhongMaterial({color:0xff0000})
 );
 door.position.set(0,3,-29);
-scene.add(door);
-let doorUnlocked=false;
+addCollider(door);
 
-/* KEY SPAWN */
-function validSpawn(pos){
-    for(let obj of colliders){
-        let box=new THREE.Box3().setFromObject(obj);
-        let point=new THREE.Vector3(pos.x,1,pos.z);
-        if(box.containsPoint(point)) return false;
-    }
-    return true;
-}
+/* ---------------- KEYS ---------------- */
+
+let keyObjects=[];
 
 function spawnKeys(){
-    keyObjects.forEach(k=>scene.remove(k));
-    keyObjects=[];
-    keysCollected=0;
-
     for(let i=0;i<totalKeys;i++){
         let key=new THREE.Mesh(
             new THREE.BoxGeometry(1,1,1),
-            new THREE.MeshPhongMaterial({color:0xffff00,emissive:0xffff00})
+            new THREE.MeshPhongMaterial({color:0xffff00})
         );
 
-        let pos;
-        do{
-            pos=new THREE.Vector3(
-                (Math.random()*40)-20,
-                1,
-                (Math.random()*40)-20
-            );
-        }while(!validSpawn(pos));
+        let placed=false;
+        let attempts=0;
 
-        key.position.copy(pos);
+        while(!placed && attempts<100){
+            attempts++;
+            let x=Math.random()*50-25;
+            let z=Math.random()*50-25;
+
+            if(Math.abs(z+29)<5) continue;
+
+            let pos=new THREE.Vector3(x,1,z);
+            if(canMove(pos,1)){
+                key.position.copy(pos);
+                placed=true;
+            }
+        }
+
+        if(!placed) key.position.set(5,1,5);
+
         scene.add(key);
         keyObjects.push(key);
     }
 }
 spawnKeys();
 
-/* MONSTER */
-let monster=new THREE.Mesh(
-    new THREE.BoxGeometry(1.5,6,1.5),
-    new THREE.MeshPhongMaterial({color:0x111111})
-);
-monster.position.set(0,3,-15);
-monster.castShadow=true;
+/* ---------------- MONSTER ---------------- */
+
+let monster=new THREE.Group();
 scene.add(monster);
 
-/* PLAYER HITBOX */
-let playerHitbox=new THREE.Mesh(
-    new THREE.CylinderGeometry(0.8,0.8,4,8),
-    new THREE.MeshBasicMaterial({visible:false})
+let monsterSpeed=4;
+let patrolSpeed=2.5;
+let monsterRadius=1.5;
+
+let patrolTarget=new THREE.Vector3();
+let hasPatrolTarget=false;
+
+let lastKnownPlayerPos=null;
+let searchTimer=0;
+let maxSearchTime=5;
+
+let body=new THREE.Mesh(
+    new THREE.CylinderGeometry(1.2,1.8,8,8),
+    new THREE.MeshPhongMaterial({color:0x0a0a0a})
 );
-scene.add(playerHitbox);
+body.position.y=4;
+monster.add(body);
 
-let raycaster=new THREE.Raycaster();
+monster.position.set(10,0,10);
 
-/* SPRINT SYSTEM */
-let isSprinting=false;
-document.addEventListener("keydown",e=>{
-    if(e.code==="ShiftLeft") isSprinting=true;
-});
-document.addEventListener("keyup",e=>{
-    if(e.code==="ShiftLeft") isSprinting=false;
-});
-
-let keysPressed={};
-document.addEventListener("keydown",e=>keysPressed[e.code]=true);
-document.addEventListener("keyup",e=>keysPressed[e.code]=false);
-
-/* COLLISION CHECK */
-function canMove(newPos,radius){
-    for(let obj of colliders){
-        let box=new THREE.Box3().setFromObject(obj);
-        let entityBox=new THREE.Box3(
-            new THREE.Vector3(newPos.x-radius,0,newPos.z-radius),
-            new THREE.Vector3(newPos.x+radius,6,newPos.z+radius)
-        );
-        if(box.intersectsBox(entityBox)) return false;
-    }
-    return true;
-}
-
-function monsterCanSeePlayer(){
-    let dir=new THREE.Vector3()
-        .subVectors(playerHitbox.position,monster.position)
-        .normalize();
-
-    raycaster.set(monster.position,dir);
-    raycaster.far=monster.position.distanceTo(playerHitbox.position);
-
-    let intersects=raycaster.intersectObjects(colliders,true);
-    return intersects.length===0;
-}
-
-function monsterInFlashlight(){
-    let dir=new THREE.Vector3();
-    camera.getWorldDirection(dir);
-
-    let toMonster=new THREE.Vector3()
-        .subVectors(monster.position,camera.position)
-        .normalize();
-
-    return dir.dot(toMonster)>0.92;
-}
-
-function triggerDeath(){
-    gameState="dead";
-    flash.style.opacity=1;
-    controls.unlock();
-    setTimeout(()=>{
-        flash.style.opacity=0;
-        document.getElementById("deathScreen").style.display="flex";
-    },300);
-}
-
-/* GAME LOOP */
-function animate(){
-requestAnimationFrame(animate);
-if(gameState!=="playing"){renderer.render(scene,camera);return;}
-
-let player=controls.getObject();
-playerHitbox.position.copy(player.position);
-
-let oldPos=player.position.clone();
-
-/* MOVEMENT */
-let speed=isSprinting?0.2:0.1;
-
-if(keysPressed["KeyW"])controls.moveForward(speed);
-if(keysPressed["KeyS"])controls.moveForward(-speed);
-if(keysPressed["KeyA"])controls.moveRight(-speed);
-if(keysPressed["KeyD"])controls.moveRight(speed);
-
-/* FOOTSTEP AUDIO */
-let moving=keysPressed["KeyW"]||keysPressed["KeyS"]||
-           keysPressed["KeyA"]||keysPressed["KeyD"];
-
-if(moving && !footstepSound.isPlaying) footstepSound.play();
-if(!moving && footstepSound.isPlaying) footstepSound.stop();
-
-let newPos=player.position.clone();
-
-let testX=oldPos.clone(); testX.x=newPos.x;
-if(canMove(testX,playerRadius))player.position.x=testX.x;
-else player.position.x=oldPos.x;
-
-let testZ=oldPos.clone(); testZ.z=newPos.z;
-if(canMove(testZ,playerRadius))player.position.z=testZ.z;
-else player.position.z=oldPos.z;
-
-/* KEY PICKUP */
-for(let i=keyObjects.length-1;i>=0;i--){
-    let key=keyObjects[i];
-    if(player.position.distanceTo(key.position)<2){
-        scene.remove(key);
-        keyObjects.splice(i,1);
-        keysCollected++;
-        monsterSpeed+=0.01;
-
-        if(keysCollected===totalKeys){
-            doorUnlocked=true;
-            door.material.color.set(0x00ff00);
+function choosePatrol(){
+    let attempts=0;
+    while(attempts<30){
+        attempts++;
+        let x=Math.random()*56-28;
+        let z=Math.random()*56-28;
+        let pos=new THREE.Vector3(x,0,z);
+        if(canMove(pos,monsterRadius)){
+            patrolTarget.copy(pos);
+            hasPatrolTarget=true;
+            return;
         }
     }
+    hasPatrolTarget=false;
 }
 
-/* WIN */
-if(doorUnlocked && player.position.distanceTo(door.position)<3){
-    gameState="win";
-    document.getElementById("winScreen").style.display="flex";
-    controls.unlock();
+function hasLineOfSight(target){
+    let origin=monster.position.clone().add(new THREE.Vector3(0,4,0));
+    let direction=target.clone().sub(origin).normalize();
+    let raycaster=new THREE.Raycaster(origin,direction);
+    let intersects=raycaster.intersectObjects(colliders);
+    if(intersects.length===0) return true;
+    return intersects[0].distance > origin.distanceTo(target);
 }
 
-/* MONSTER AI */
-let dist=monster.position.distanceTo(player.position);
+function moveWithSlide(direction,speed){
+    let move=direction.clone().multiplyScalar(speed);
+    let newPos=monster.position.clone().add(move);
 
-if(dist<25 && monsterCanSeePlayer()){
-    chasing=true;
-}
-
-if(chasing){
-    if(!chaseSound.isPlaying) chaseSound.play();
-
-    let dir=new THREE.Vector3()
-        .subVectors(player.position,monster.position)
-        .normalize();
-
-    monster.position.add(dir.multiplyScalar(monsterSpeed));
-    monster.lookAt(player.position);
-
-    if(dist>30 && !monsterCanSeePlayer()){
-        chasing=false;
-    }
-}else{
-    if(chaseSound.isPlaying) chaseSound.stop();
-
-    wanderTimer--;
-    if(wanderTimer<=0){
-        wanderDirection.set(Math.random()-0.5,0,Math.random()-0.5).normalize();
-        wanderTimer=200;
+    if(canMove(newPos,monsterRadius)){
+        monster.position.copy(newPos);
+        return;
     }
 
-    let move=wanderDirection.clone().multiplyScalar(0.02);
-    let testPos=monster.position.clone().add(move);
-    if(canMove(testPos,monsterRadius)){
-        monster.position.add(move);
+    let slideX=monster.position.clone().add(new THREE.Vector3(move.x,0,0));
+    if(canMove(slideX,monsterRadius)){
+        monster.position.copy(slideX);
+        return;
+    }
+
+    let slideZ=monster.position.clone().add(new THREE.Vector3(0,0,move.z));
+    if(canMove(slideZ,monsterRadius)){
+        monster.position.copy(slideZ);
+        return;
     }
 }
 
-/* FLASHLIGHT EFFECT */
-if(monsterInFlashlight()){
-    monster.material.color.set(0x444444);
-    chasing=false;
-}else{
-    monster.material.color.set(0x111111);
+/* ---------------- LOOP ---------------- */
+
+function animate(){
+    if(gameState!=="playing") return;
+    requestAnimationFrame(animate);
+
+    let delta=clock.getDelta();
+    updateBoxes();
+
+    let playerPos=controls.getObject().position;
+
+    /* PLAYER MOVE */
+    let dir=new THREE.Vector3();
+    if(moveForward) dir.z-=1;
+    if(moveBackward) dir.z+=1;
+    if(moveLeft) dir.x-=1;
+    if(moveRight) dir.x+=1;
+
+    if(dir.length()>0){
+        dir.normalize();
+        dir.applyQuaternion(camera.quaternion);
+        dir.y=0;
+        dir.normalize();
+        let move=dir.multiplyScalar(playerSpeed*delta);
+        let newPos=playerPos.clone().add(move);
+        if(canMove(newPos,playerRadius)){
+            controls.getObject().position.copy(newPos);
+        }
+    }
+
+    /* KEY PICKUP */
+    keyObjects=keyObjects.filter(key=>{
+        if(key.position.distanceTo(playerPos)<2){
+            scene.remove(key);
+            keysCollected++;
+            hud.innerHTML=`Keys: ${keysCollected} / ${totalKeys}`;
+            if(keysCollected>=totalKeys){
+                doorUnlocked=true;
+                scene.remove(door);
+                colliders=colliders.filter(obj=>obj!==door);
+            }
+            return false;
+        }
+        return true;
+    });
+
+    /* WIN */
+    if(doorUnlocked && playerPos.z<-28 && Math.abs(playerPos.x)<2){
+        hud.innerHTML="YOU ESCAPED!";
+        gameState="win";
+        return;
+    }
+
+    /* MONSTER AI */
+    let dist=monster.position.distanceTo(playerPos);
+    let canSeePlayer = dist < 20 && hasLineOfSight(playerPos);
+
+    if(canSeePlayer){
+        lastKnownPlayerPos = playerPos.clone();
+        searchTimer = 0;
+    }
+
+    if(lastKnownPlayerPos){
+        let target = lastKnownPlayerPos.clone();
+        let mdir = target.sub(monster.position);
+        mdir.y=0;
+
+        if(mdir.length()<1){
+            searchTimer += delta;
+            if(searchTimer > maxSearchTime){
+                lastKnownPlayerPos = null;
+            }
+        }else{
+            mdir.normalize();
+            moveWithSlide(mdir,monsterSpeed*delta);
+        }
+    }else{
+        if(!hasPatrolTarget) choosePatrol();
+        if(hasPatrolTarget){
+            let mdir = patrolTarget.clone().sub(monster.position);
+            mdir.y=0;
+            if(mdir.length()<1){
+                hasPatrolTarget=false;
+            }else{
+                mdir.normalize();
+                moveWithSlide(mdir,patrolSpeed*delta);
+            }
+        }
+    }
+
+    /* DEATH */
+    if(dist<2){
+        hud.innerHTML="YOU DIED.";
+        gameState="dead";
+        return;
+    }
+
+    renderer.render(scene,camera);
 }
 
-/* ATTACK */
-if(dist<2){
-    triggerDeath();
-}
-
-renderer.render(scene,camera);
-}
 animate();
-
-/* START / RESTART */
-window.startGame=function(){
-document.getElementById("menu").style.display="none";
-spawnKeys();
-doorUnlocked=false;
-door.material.color.set(0xff0000);
-monsterSpeed=0.05;
-chasing=false;
-controls.getObject().position.set(0,2,20);
-controls.lock();
-gameState="playing";
-}
-
-window.restartGame=function(){
-location.reload();
-}
 </script>
